@@ -77,3 +77,71 @@ python agent.py dev
 ```
 
 When a user or simulator connects to a LiveKit room, M2 will join automatically as the `AGENT` participant, run dialogue inference through your configured model endpoint, and return audio and transcriptions.
+
+---
+
+## 4. M1 User Simulator + Conversation Harness (benchmark)
+
+This directory also hosts the **M1 user simulator** and the M1<->M2 conversation
+orchestrator used for benchmarking (see `docs/iva-golden-dataset-implementation-plan.md`
+and `AI-eval-testing/Workflow-design.md`):
+
+| File | Responsibility |
+|---|---|
+| `schemas.py` | Pydantic contracts: Task / Message / Tick / Telemetry / SimulationRun |
+| `m1_simulator.py` | Persona prompt builder from CSV (`description`/`scenario`/`caller_name`/`gender`/`anrede`), seeded behavioral knobs, litellm caller, anti-cheat guard |
+| `environment.py` | Stateful DB with SHA-256 `get_hash()`, `@is_tool` / `ToolKitBase`, telephony toolkits |
+| `orchestrator.py` | Half-duplex text loop + full-duplex 200 ms tick loop; tool calls execute before the next turn; stop conditions |
+| `report.py` | Intent grading (normalize + token-F1), `results/<task_id>/<run>.json` artifacts, Wilson CI aggregation |
+| `batch_runner.py` | CSV task loader, component wiring, batch cells keyed `(trial, task_id, seed)` with resume |
+| `test_conversation.py` | `--mock` offline proof, `--live` real endpoints in-process, `--live-room` LiveKit probe |
+
+### Configure M1
+
+Copy `.env.example` -> `.env` and set:
+
+```env
+M1_MODEL_ENDPOINT=https://openrouter.ai/api/v1
+M1_API_KEY=sk-or-...
+M1_MODEL_NAME=google/gemini-2.5-flash   # Easy/Medium tier per user-simulator-models.md
+M1_TEMPERATURE=0.7
+```
+
+### Verify the conversation works
+
+```bash
+# 1. Offline proof (no network): turn ordering, tools-before-next-turn,
+#    intent extraction, anti-cheat, 200ms tick smoke test
+python test_conversation.py --mock
+
+# 2. M1 endpoint check (masked keys)
+python test_m1.py          # or: python test_m1.py --mock
+
+# 3. Real text-mode conversation M1 <-> M2-configured LLM (in-process)
+python test_conversation.py --live --row 0
+# writes results/<task_id>/text-trial1-seed*.json
+
+# 4. Batch over the golden CSV with checkpointing
+python batch_runner.py --limit 5 --trials 3 --modes text
+```
+
+### Console test against the hosted M2 worker
+
+```bash
+# Terminal A — start the agent worker with your exported env
+set -a; source .env; set +a
+lk agent dev
+```
+
+```bash
+# Terminal B — probe the room as an M1 participant (experimental)
+python test_conversation.py --live-room --room benchmark-m1-m2 --room-wait 30
+```
+
+The Flutter app remains the visualizer/debugger: run it normally and send the
+CSV opener by hand to watch the same conversation in the UI.
+
+**Anti-cheating note:** M1's context is built ONLY from `description` (goal),
+`scenario` (verbatim opener) and persona fields. `expected_output` /
+`intent_name` never enter its prompts — enforced by `assert_no_leak()` and
+audited in tests.
