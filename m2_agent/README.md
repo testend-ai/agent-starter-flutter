@@ -89,12 +89,12 @@ and `AI-eval-testing/Workflow-design.md`):
 | File | Responsibility |
 |---|---|
 | `schemas.py` | Pydantic contracts: Task / Message / Tick / Telemetry / SimulationRun |
-| `m1_simulator.py` | Persona prompt builder from CSV (`description`/`scenario`/`caller_name`/`gender`/`anrede`), seeded behavioral knobs, litellm caller, anti-cheat guard |
+| `m1_simulator.py` | Persona prompt builder from CSV (`description`/`scenario`/`caller_name`/`gender`/`anrede`), seeded behavioral knobs, litellm caller |
 | `environment.py` | Stateful DB with SHA-256 `get_hash()`, `@is_tool` / `ToolKitBase`, telephony toolkits |
 | `orchestrator.py` | Half-duplex text loop + full-duplex 200 ms tick loop; tool calls execute before the next turn; stop conditions |
-| `report.py` | Intent grading (normalize + token-F1), `results/<task_id>/<run>.json` artifacts, Wilson CI aggregation |
+| `report.py` | Run-data artifact writer: `results/<task_id>/<run>.json` (trajectory, transcript, telemetry), checkpoint scanner |
 | `batch_runner.py` | CSV task loader, component wiring, batch cells keyed `(trial, task_id, seed)` with resume |
-| `test_conversation.py` | `--mock` offline proof, `--live` real endpoints in-process, `--live-room` LiveKit probe |
+| `test_conversation.py` | `--mock` offline proof, `--live` real endpoints in-process, `--live-room` fully automatic room session |
 
 ### Configure M1
 
@@ -111,7 +111,7 @@ M1_TEMPERATURE=0.7
 
 ```bash
 # 1. Offline proof (no network): turn ordering, tools-before-next-turn,
-#    intent extraction, anti-cheat, 200ms tick smoke test
+#    transcript capture, 200ms tick smoke test
 python test_conversation.py --mock
 
 # 2. M1 endpoint check (masked keys)
@@ -141,7 +141,5 @@ python test_conversation.py --live-room --no-worker   # Terminal B
 The Flutter app remains the visualizer/debugger: run it normally and send the
 CSV opener by hand to watch the same conversation in the UI.
 
-**Anti-cheating note:** M1's context is built ONLY from `description` (goal),
-`scenario` (verbatim opener) and persona fields. `expected_output` /
-`intent_name` never enter its prompts — enforced by `assert_no_leak()` and
-audited in tests.
+**Scope note:** this harness collects raw conversation data only — trajectory,
+transcript and telemetry per run. No scoring/grading is applied.

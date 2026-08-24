@@ -31,11 +31,10 @@ from schemas import Persona, Task  # noqa: E402
 def _sample_task() -> Task:
     return Task(
         task_id="RequestProofOfFunds#0001",
-        intent_name="RequestProofOfFunds",
-        expected_output="REQUEST_PROOF_OF_FUNDS",
         goal="Caller needs an official letter or document confirming the funds available in their account.",
         opener="Mein Notar braucht einen Finanzierungsnachweis von meiner Bank.",
         persona=Persona(caller_name="Ahmed Hassan", gender="männlich", anrede="Sie"),
+        metadata={"intent": "RequestProofOfFunds"},
     )
 
 
@@ -46,7 +45,7 @@ def run_mock() -> bool:
     knobs = generate_knobs(task.task_id, trial=1, base_seed=0)
     sim = M1UserSimulator(task=task, knobs=knobs, seed=0, llm_fn=lambda **kw: "Danke, das passt.")
     print(f"  Persona prompt built: {len(sim.system_prompt)} chars, tier={knobs.tier}")
-    print("  Anti-cheat guard active, seeded knobs deterministic")
+    print("  Seeded knobs deterministic, litellm caller wired")
     print("  Status:   SUCCESS (mock)")
     print("=" * 60)
     return True

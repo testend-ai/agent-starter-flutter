@@ -1,14 +1,14 @@
-"""Batch execution of benchmark cells (tau2 runner layers 2+3).
+"""Batch execution of conversation cells (tau2 runner layers 2+3).
 
 Layer 2 (build): wires Environment + M2 agent adapter + M1 user simulator +
 orchestrator from env/config — the only place components are instantiated.
 Layer 3 (batch): iterates tasks x trials x seeds, checkpoints completed
-(trial, task_id, seed) cells by scanning artifacts, and writes reports.
+(trial, task_id, seed) cells by scanning artifacts, and writes run-data
+artifacts.
 
-Also hosts the CSV -> Task loader (Workflow-design.md 3.1: drop
-``Ausgeschlossen=Ja``, map persona/goal/opener, keep gold fields for grading)
-and the text-mode M2 adapter used when the real LiveKit worker is not in the
-loop.
+Also hosts the CSV -> Task loader (drop ``Ausgeschlossen=Ja``, map
+persona/goal/opener) and the text-mode M2 adapter used when the real LiveKit
+worker is not in the loop.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from environment import DEFAULT_POLICY, Environment, TelephonyDB
 from m1_simulator import LLMConfig, M1UserSimulator, derive_seed, generate_knobs, litellm_llm_fn
 from orchestrator import FullDuplexTickOrchestrator, HalfDuplexOrchestrator
-from report import aggregate, build_report, existing_cells, write_report
+from report import build_report, existing_cells, write_report
 from schemas import DifficultyTier, Message, Persona, RunMode, SimulationRun, Task, ToolCall
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -34,7 +34,7 @@ load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 logger = logging.getLogger("batch-runner")
 
-REQUIRED_COLUMNS = ("intent_name", "expected_output", "description", "scenario", "caller_name", "gender", "anrede")
+REQUIRED_COLUMNS = ("intent_name", "description", "scenario", "caller_name", "gender", "anrede")
 
 
 def _env(key: str, default: str = "") -> str:
@@ -47,7 +47,11 @@ def _mask(key: str) -> str:
 
 # ------------------------------------------------------------------ CSV loading
 def load_tasks(csv_path: Path, limit: int | None = None) -> list[Task]:
-    """IVA_Test.csv -> normalized Task list (plan section 4.3 steps 1-5)."""
+    """IVA_Test.csv -> normalized Task list (drops ``Ausgeschlossen=Ja`` rows).
+
+    The intent label survives only as task_id prefix / metadata for
+    traceability — it is not used to steer the conversation.
+    """
     tasks: list[Task] = []
     dropped_excluded = 0
     seen_ids: set[str] = set()
@@ -62,15 +66,14 @@ def load_tasks(csv_path: Path, limit: int | None = None) -> list[Task]:
                 logger.debug("row skipped, missing %s", missing)
                 continue
             contact_id = (row.get("ID des Kontakts") or "").strip() or str(len(tasks) + 1)
-            task_id = f"{(row.get('intent_name') or '').strip()}#{int(contact_id):04d}"
+            intent = (row.get("intent_name") or "").strip()
+            task_id = f"{intent}#{int(contact_id):04d}"
             if task_id in seen_ids:
                 continue
             seen_ids.add(task_id)
             tasks.append(
                 Task(
                     task_id=task_id,
-                    intent_name=(row["intent_name"] or "").strip(),
-                    expected_output=(row["expected_output"] or "").strip(),
                     goal=row["description"].strip(),
                     opener=row["scenario"].strip(),
                     persona=Persona(
@@ -80,6 +83,7 @@ def load_tasks(csv_path: Path, limit: int | None = None) -> list[Task]:
                         pronouns_de=[],
                     ),
                     metadata={
+                        "intent": intent,
                         "callernbr": (row.get("callernbr") or "").strip(),
                         "priority": (row.get("Priorität") or "").strip(),
                         "contact_id": contact_id,
@@ -227,7 +231,7 @@ def run_tasks(
 ) -> dict[str, object]:
     """Run every (task, trial, seed[, mode]) cell; skip already-written cells."""
     done = existing_cells(results_dir) if resume else set()
-    reports = []
+    written: list[Path] = []
     for trial in range(1, trials + 1):
         for task in tasks:
             seed = derive_seed(base_seed, task.task_id, trial)
@@ -248,17 +252,16 @@ def run_tasks(
                 run: SimulationRun = orchestrator.run(task, trial=trial, seed=seed)
                 report = build_report(task, run)
                 path = write_report(results_dir, report)
-                logger.info("%s -> %s [%s/%s]", run.run_id, path, report.outcome, report.predicted_label or "no label")
-                reports.append(report)
-    summary = aggregate(reports)
-    return {"runs": len(reports), "per_task": summary}
+                logger.info("%s -> %s [%d turns, stop=%s]", run.run_id, path, report.turns, report.stop_reason)
+                written.append(path)
+    return {"runs": len(written), "artifacts": [str(p) for p in written]}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Batch-run M1<->M2 benchmark conversations")
     parser.add_argument("--csv", default="/Users/jaime/AI-eval-testing/IVA_Test.csv", help="Golden CSV path")
     parser.add_argument("--limit", type=int, default=1, help="Max usable rows to run (default 1)")
-    parser.add_argument("--trials", type=int, default=3, help="Trials per task (3-5 per benchmark rules)")
+    parser.add_argument("--trials", type=int, default=3, help="Trials per task")
     parser.add_argument("--modes", nargs="+", choices=["text", "audio"], default=["text"])
     parser.add_argument("--tier", choices=["easy", "medium", "hard", "adversarial"], default=None)
     parser.add_argument("--results-dir", default="results")
@@ -279,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
         resume=not args.no_resume,
     )
     print(f"completed {result['runs']} runs")
-    print(result["per_task"])
+    for artifact in result["artifacts"]:
+        print(f"  {artifact}")
     return 0
 
 

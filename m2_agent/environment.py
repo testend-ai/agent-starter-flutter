@@ -1,12 +1,11 @@
 """Stateful environment / mock backend (tau2 Layer-1 pattern).
 
-Implements the pieces TAU2_BENCH_ARCHITECTURE.md section 4.3 pins down:
-a ``DB`` base with a deterministic SHA-256 ``get_hash()``, ``@is_tool`` +
-``ToolKitBase`` metaclass tool registration, and an ``Environment`` that is the
-only place state mutates. For the current intent-only golden CSV the world is
-the telephony/policy domain with no external database to grade; per-intent
-``tool_spec`` extensions later plug into the same interface without touching
-tasks (iva-golden-dataset-implementation-plan.md 4.6).
+Implements the tau2 environment pieces: a ``DB`` base with a deterministic
+SHA-256 ``get_hash()``, ``@is_tool`` + ``ToolKitBase`` metaclass tool
+registration, and an ``Environment`` that is the only place state mutates.
+For the current intent-only golden CSV the world is the telephony/policy
+domain; per-intent ``tool_spec`` extensions later plug into the same
+interface without touching tasks.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def canonical_json(payload: Any) -> str:
 
 
 class DB(BaseModel):
-    """Base state container; hash feeds L1 state grading (Workflow-design.md 4.2)."""
+    """Base state container; hash snapshots the end-of-call world state."""
 
     def get_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump()).encode("utf-8")).hexdigest()

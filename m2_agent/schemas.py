@@ -82,15 +82,13 @@ class Persona(BaseModel):
 
 
 class Task(BaseModel):
-    """Canonical task schema (iva-golden-dataset-implementation-plan.md 4.2).
+    """Canonical conversation-task schema (iva-golden-dataset-implementation-plan.md 4.2).
 
-    ``intent_name`` / ``expected_output`` are the GOLD side: they feed grading
-    only and are hard-blocked from any M1 context by m1_simulator.assert_no_leak.
+    Pure data-collection view: what M1 needs to play the caller. The source
+    intent label is kept in ``metadata`` for traceability only.
     """
 
     task_id: str
-    intent_name: str
-    expected_output: str
     goal: str = Field(description="EN caller need — becomes the M1 goal block.")
     opener: str = Field(description="DE first utterance — sent verbatim as the first user turn.")
     persona: Persona
@@ -185,17 +183,16 @@ class SimulationRun(BaseModel):
     m1_model: str = ""
     m1_temperature: float = 0.7
     m2_model: str = ""
-    predicted_label: str = ""
 
 
 class RunReport(BaseModel):
-    """Per-run JSON artifact written to results/<task_id>/<run>.json.
+    """Per-run data artifact written to results/<task_id>/<run>.json.
 
-    Field set mirrors iva-golden-dataset-implementation-plan.md 5.3 plus the
-    audit tags required by Workflow-design.md 3.9.
+    Core data-obtaining payload only: transcript, trajectory metadata and
+    telemetry. No scoring/grading fields.
     """
 
-    schema_version: str = "1.0"
+    schema_version: str = "2.0"
     task_id: str
     run_id: str
     trial: int
@@ -203,17 +200,12 @@ class RunReport(BaseModel):
     mode: RunMode
     turns: int
     final_transcript: str
-    intent_match: bool
-    intent_f1: float
-    outcome: Literal["pass", "wrong", "no_result", "incomplete"]
-    r_intent: float
-    predicted_label: str = Field(description="Extracted label — the value written to real_output.")
-    expected_output: str
+    trajectory: list[Message] = Field(default_factory=list)
+    ticks: list[Tick] = Field(default_factory=list)
     stop_reason: str
     duration_ms: float
     model_version: str = Field(description="M1 user-simulator model id.")
     temperature: float
-    judge_model: str | None = None
     m2_model: str = ""
     telemetry_summary: dict[str, Any] = Field(default_factory=dict)
     turn_taking: TurnTakingMetrics = Field(default_factory=TurnTakingMetrics)

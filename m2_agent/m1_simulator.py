@@ -1,12 +1,10 @@
 """M1 — the LLM user simulator that plays the human caller.
 
-Satisfies Workflow-design.md 3.4, How we benchmark.md "Four-Actor Model" and
-user-simulator-models.md: M1 gets goal + persona + seeded behavioral knobs and
-NEVER sees ``expected_output`` / ``intent_name`` (anti-cheating guardrail,
-asserted on every prompt build). Any OpenAI-compatible endpoint works via
-litellm (M1_MODEL_ENDPOINT / M1_API_KEY / M1_MODEL_NAME), so tier routing per
-user-simulator-models.md (Gemini Flash for Easy/Medium, Claude for
-Hard/Adversarial, DeepSeek budget) is a .env change, not a code change.
+M1 gets goal + persona + seeded behavioral knobs and generates the caller side
+of the conversation. Any OpenAI-compatible endpoint works via litellm
+(M1_MODEL_ENDPOINT / M1_API_KEY / M1_MODEL_NAME), so tier routing
+(Gemini Flash for Easy/Medium, Claude for Hard/Adversarial, DeepSeek budget)
+is a .env change, not a code change.
 """
 
 from __future__ import annotations
@@ -16,7 +14,6 @@ import json
 import logging
 import os
 import random
-import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,8 +28,6 @@ load_dotenv(Path(__file__).with_name(".env"))
 load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 logger = logging.getLogger("m1-simulator")
-
-FORBIDDEN_FIELDS = ("expected_output", "intent_name")
 
 # user-simulator-models.md difficulty tiers -> knob ranges (seeded jitter on top)
 TIER_KNOBS: dict[DifficultyTier, dict[str, tuple[float, float] | int]] = {
@@ -119,31 +114,6 @@ def generate_knobs(
     )
 
 
-def assert_no_leak(text: str, task: Task) -> None:
-    """Audit guard: gold fields must never appear in anything sent to M1.
-
-    Two checks per forbidden field (Infrastructure Implementation Plan.md 4):
-    raw case-insensitive substring, and a token-sequence match on
-    camel-case-expanded text so ``RequestProofOfFunds`` cannot slip through as
-    prose.
-    """
-    prompt_tokens = _camel_tokens(text)
-    for value in (task.expected_output, task.intent_name):
-        if not value.strip():
-            continue
-        if value.lower() in text.lower():
-            raise ValueError(f"anti-cheat violation: gold field '{value}' leaked into M1 context")
-        value_tokens = list(_camel_tokens(value))
-        n = len(value_tokens)
-        if n and any(prompt_tokens[i : i + n] == value_tokens for i in range(len(prompt_tokens) - n + 1)):
-            raise ValueError(f"anti-cheat violation: gold field '{value}' (camel-split) leaked into M1 context")
-
-
-def _camel_tokens(text: str) -> list[str]:
-    expanded = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", re.sub(r"[_\s]+", " ", text))
-    return [t.lower() for t in re.findall(r"[A-Za-z0-9]+", expanded)]
-
-
 class LLMConfig(BaseModel):
     """Plug-and-play endpoint config (mirrors M2_* naming)."""
 
@@ -228,11 +198,7 @@ If the agent solved your need and confirmed it, accept politely and call the con
 
 
 def build_system_prompt(task: Task, knobs: BehaviorKnobs) -> str:
-    """Persona+goal prompt built ONLY from non-gold fields (plan section 4.5).
-
-    Anti-cheat: ``expected_output``/``intent_name`` are never read here and the
-    rendered text is audited by :func:`assert_no_leak` before returning.
-    """
+    """Persona+goal prompt built from the task's goal/opener/persona fields."""
     persona = build_persona(task)
     formal = persona.anrede.strip().lower() == "sie"
     gender_word = {"er": "male", "sie": "female"}.get(persona.pronouns_de[0], "caller")
@@ -248,7 +214,6 @@ def build_system_prompt(task: Task, knobs: BehaviorKnobs) -> str:
         hesitation=knobs.hesitation,
         stop=STOP_MARKER,
     )
-    assert_no_leak(prompt, task)
     return prompt
 
 

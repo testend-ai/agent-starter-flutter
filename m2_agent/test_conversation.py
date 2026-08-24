@@ -44,27 +44,24 @@ load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 from batch_runner import M2TextAgent, build_orchestrator, load_tasks  # noqa: E402
 from environment import Environment, TelephonyDB  # noqa: E402
 from m1_simulator import (  # noqa: E402
-    FORBIDDEN_FIELDS,
     STOP_MARKER,
     M1UserSimulator,
-    assert_no_leak,
     derive_pronouns_de,
     derive_seed,
     generate_knobs,
 )
 from orchestrator import FullDuplexTickOrchestrator, HalfDuplexOrchestrator  # noqa: E402
-from report import build_report, extract_predicted_label, grade_intent, token_f1, write_report  # noqa: E402
+from report import build_report, write_report  # noqa: E402
 from schemas import Message, Persona, SimulationRun, Task, TurnTelemetry, now_ns  # noqa: E402
 
 logger = logging.getLogger("test-conversation")
 
 MOCK_TASK = Task(
     task_id="RequestProofOfFunds#0001",
-    intent_name="RequestProofOfFunds",
-    expected_output="REQUEST_PROOF_OF_FUNDS",
     goal="Caller needs an official letter or document confirming the funds available in their account.",
     opener="Mein Notar braucht einen Finanzierungsnachweis von meiner Bank.",
     persona=Persona(caller_name="Ahmed Hassan", gender="männlich", anrede="Sie"),
+    metadata={"intent": "RequestProofOfFunds"},
 )
 
 
@@ -108,7 +105,7 @@ def run_mock(results_dir: Path) -> int:
             failures.append(label)
 
     print("=" * 70)
-    print(" [1] unit checks: pronouns, knobs determinism, anti-cheat, token-F1")
+    print(" [1] unit checks: pronouns, knobs determinism")
     check("pronouns from gender only", derive_pronouns_de("männlich") == ["er", "ihm"] and derive_pronouns_de("weiblich") == ["sie", "ihr"])
 
     knobs_a = generate_knobs(MOCK_TASK.task_id, trial=1, base_seed=42)
@@ -116,33 +113,15 @@ def run_mock(results_dir: Path) -> int:
     knobs_c = generate_knobs(MOCK_TASK.task_id, trial=2, base_seed=42)
     check("knobs deterministic per (task,trial,seed)", knobs_a == knobs_b and knobs_a != knobs_c)
 
-    try:
-        assert_no_leak(f"please reach {MOCK_TASK.expected_output}", MOCK_TASK)
-        check("anti-cheat rejects gold label", False)
-    except ValueError:
-        check("anti-cheat rejects gold label", True)
-    try:
-        assert_no_leak(f"intent is {MOCK_TASK.intent_name}", MOCK_TASK)
-        check("anti-cheat rejects camelCase intent", False)
-    except ValueError:
-        check("anti-cheat rejects camelCase intent", True)
     prompt_user = M1UserSimulator(
         task=MOCK_TASK,
         knobs=knobs_a,
         seed=0,
         llm_fn=lambda **kw: "",
     ).system_prompt
-    check("M1 prompt contains goal+opener fields only", MOCK_TASK.goal.split()[0] in prompt_user and "Ahmed Hassan" in prompt_user)
     check(
-        "forbidden fields absent from prompt builder inputs",
-        all(f not in ("description", "scenario", "caller_name", "gender", "anrede") for f in FORBIDDEN_FIELDS),
-    )
-
-    check("token-F1 exact", token_f1("REQUEST_PROOF_OF_FUNDS", "REQUEST_PROOF_OF_FUNDS") == 1.0)
-    check("token-F1 disjoint", token_f1("TRANSFER_TO_HUMAN_AGENT", "REQUEST_BANK_STATEMENT") == 0.0)
-    check(
-        "token-F1 camelCase normalisation",
-        token_f1("RequestProofOfFunds", "REQUEST PROOF OF FUNDS") == 1.0,
+        "M1 prompt built from goal+persona",
+        MOCK_TASK.goal.split()[0] in prompt_user and "Ahmed Hassan" in prompt_user,
     )
 
     print("-" * 70)
@@ -195,15 +174,15 @@ def run_mock(results_dir: Path) -> int:
     check("environment recorded intent", "REQUEST_PROOF_OF_FUNDS" in TelephonyDB(**env.snapshot()).detected_intents)
     check("caller confirmation recorded", TelephonyDB(**env.snapshot()).resolution_confirmed_by_caller)
 
-    predicted = extract_predicted_label(run)
-    matched, f1, outcome = grade_intent(MOCK_TASK, predicted)
-    check("predicted label extracted", predicted == "REQUEST_PROOF_OF_FUNDS", predicted or "(empty)")
-    check("intent match pass", matched and outcome == "pass")
-
     report = build_report(MOCK_TASK, run)
     path = write_report(results_dir, report)
     parsed = json.loads(path.read_text(encoding="utf-8"))
-    check("artifact written & parseable", parsed["task_id"] == MOCK_TASK.task_id and parsed["intent_match"])
+    transcript_ok = MOCK_TASK.opener.split()[0] in parsed["final_transcript"] and parsed["turns"] >= 2
+    trajectory_ok = len(parsed.get("trajectory", [])) == len(run.trajectory)
+    check(
+        "artifact written with transcript + raw trajectory",
+        parsed["task_id"] == MOCK_TASK.task_id and transcript_ok and trajectory_ok,
+    )
     print(f"        artifact: {path}")
 
     print("-" * 70)
@@ -277,11 +256,10 @@ def run_live(csv_path: Path, row_index: int, results_dir: Path, max_turns: int, 
     print("-" * 70)
     print(report.final_transcript)
     print("-" * 70)
-    print(f"stop={run.stop_reason} turns={report.turns} predicted={report.predicted_label!r} "
-          f"expected={task.expected_output} match={report.intent_match} f1={report.intent_f1}")
+    print(f"stop={run.stop_reason} turns={report.turns}")
     print(f"artifact: {path}")
     print(f"db hash: {env.get_db_hash()}")
-    return 0 if report.predicted_label else 1
+    return 0 if report.turns >= 2 else 1
 
 
 def run_live_room(
@@ -525,8 +503,7 @@ def run_live_room(
     print("-" * 70)
     print(report.final_transcript)
     print("-" * 70)
-    print(f"stop={state['stop_reason']} turns={report.turns} predicted={report.predicted_label!r} "
-          f"expected={task.expected_output} match={report.intent_match}")
+    print(f"stop={state['stop_reason']} turns={report.turns} duration={report.duration_ms:.0f}ms")
     print(f"artifact: {out}\nworker log: {worker_log_path}")
     return 0 if history else rc
 
