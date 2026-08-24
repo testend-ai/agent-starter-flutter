@@ -21,9 +21,9 @@ python run.py                         # text sessions on the golden dataset
 python run.py --mode room             # full automatic LiveKit sessions
 ```
 
-`run.py` auto-discovers `~/AI-eval-testing/IVA_Test.csv`, starts conversations,
-and writes artifacts to `results/<task_id>/`. Full guide:
-`docs/M1_IMPLEMENTATION_AND_TESTING.md`.
+`run.py` auto-discovers `~/AI-eval-testing/IVA_Test.csv`, sweeps the whole
+usable dataset (checkpointed — re-runs continue with pending rows), and writes
+artifacts to `results/<task_id>/`. Full guide: `docs/M1_IMPLEMENTATION_AND_TESTING.md`.
 
 Useful flags:
 

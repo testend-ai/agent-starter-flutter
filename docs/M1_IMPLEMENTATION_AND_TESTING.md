@@ -43,7 +43,9 @@ M1_TEMPERATURE=0.7
 M1_DIFFICULTY=medium                    # easy | medium | hard | adversarial
 ```
 
-Optional: `GOLDEN_DATASET_CSV=/path/to/IVA_Test.csv` to pin the dataset location.
+Optional env:
+- `GOLDEN_DATASET_CSV=/path/to/IVA_Test.csv` to pin the dataset location
+- `M2_INSTRUCTIONS` — the harness text-mode M2 uses the same persona as the deployed worker
 
 ## 3. File Layout
 
@@ -73,13 +75,14 @@ cp m2_agent/.env.example m2_agent/.env   # fill M1_*/M2_* (+LIVEKIT_* for room m
 ## 5. Running Conversations
 
 ```bash
-# defaults: text mode, first 3 golden-dataset rows, medium tier
+# defaults: text mode, the ENTIRE usable dataset (233 rows), medium tier.
+# Progress is checkpointed — each re-run continues with the next pending rows.
 python m2_agent/run.py
 
-# scale up / filter
+# bound how many pending rows run per invocation
 python m2_agent/run.py --limit 20 --trials 3
 python m2_agent/run.py --task RequestProofOfFunds
-python m2_agent/run.py --tier hard
+python m2_agent/run.py --tier hard          # easy | medium | hard | adversarial
 
 # full LiveKit sessions (auto-spawns the M2 worker per run)
 python m2_agent/run.py --mode room --room-wait 240 --max-turns 3
@@ -91,9 +94,16 @@ python m2_agent/run.py --mode room,text --limit 5
 lk agent dev   # terminal A (in m2_agent/)
 python m2_agent/run.py --mode room --no-worker   # terminal B
 
-# explicit dataset path
+# explicit dataset path (file OR directory containing IVA_Test.csv)
 python m2_agent/run.py --csv /path/to/IVA_Test.csv
 ```
+
+Everything on the conversation side comes from the dataset: goal, opener,
+persona and tier knobs are read per row; nothing about a row is hardcoded.
+
+**M1 endpoint fallback:** if `M1_API_KEY` is unset, the caller automatically
+reuses `M2_MODEL_ENDPOINT`/`M2_API_KEY`/`M2_MODEL_NAME` (notice printed) so a
+dataset sweep runs with only M2 credentials configured.
 
 Checkpointing: completed `(trial, task_id, seed)` cells are skipped on re-run
 (`--no-resume` forces re-running). A fully-resumed run exits 0.

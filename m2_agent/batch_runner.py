@@ -112,7 +112,7 @@ class M2TextAgent:
         self,
         config: LLMConfig | None = None,
         environment: Environment | None = None,
-        instructions: str = DEFAULT_POLICY,
+        instructions: str | None = None,
         llm_fn=None,
     ) -> None:
         self.config = config or LLMConfig(
@@ -121,8 +121,9 @@ class M2TextAgent:
             model=_env("M2_MODEL_NAME", "gpt-4o-mini"),
             temperature=float(_env("M2_TEMPERATURE", "0.7") or 0.7),
         )
+        # honor the deployed worker's persona so harness-M2 == room-M2
+        self.instructions = instructions or _env("M2_INSTRUCTIONS") or DEFAULT_POLICY
         self.environment = environment
-        self.instructions = instructions
         self.llm_fn = llm_fn or litellm_llm_fn(self.config)
         if self.config.endpoint:
             logger.info("M2TextAgent model=%s endpoint=%s key=%s", self.config.model, self.config.endpoint, _mask(self.config.api_key))

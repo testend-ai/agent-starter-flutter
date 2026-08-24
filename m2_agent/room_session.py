@@ -38,21 +38,26 @@ logger = logging.getLogger("room-session")
 QUIET_S = 5.0  # no new transcript text for this long => agent turn complete
 
 
-def _scripted_user():
-    """German caller fallback so room sessions run without an M1 key."""
+def resolve_m1_config() -> tuple[LLMConfig | None, str]:
+    """Dataset-driven M1 config: dedicated M1_* creds, else reuse M2's.
 
-    class _ScriptedUser:
-        replies = ["Danke, das reicht mir erstmal.", "Gut, dann bin ich zufrieden.", "Auf Wiedersehen!"]
-
-        def __init__(self) -> None:
-            self.i = 0
-
-        def generate_next_message(self, history: list[Message]) -> Message:
-            reply = self.replies[min(self.i, len(self.replies) - 1)]
-            self.i += 1
-            return Message(role="user", content=f"{reply} {STOP_MARKER}" if self.i >= len(self.replies) else reply)
-
-    return _ScriptedUser()
+    Returns (config_or_None, notice). None means no usable endpoint at all.
+    """
+    cfg = LLMConfig.from_env("M1")
+    if cfg.api_key:
+        return cfg, ""
+    m2 = LLMConfig.from_env("M2")
+    if m2.api_key:
+        return (
+            LLMConfig(
+                endpoint=m2.endpoint,
+                api_key=m2.api_key,
+                model=m2.model,
+                temperature=float(os.environ.get("M1_TEMPERATURE", "0.7") or 0.7),
+            ),
+            f"M1_* not set — reusing M2 endpoint/model '{m2.model}' for the caller",
+        )
+    return None, "neither M1_API_KEY nor M2_MODEL_API_KEY configured"
 
 
 def _spawn_worker(log_path: Path) -> tuple[subprocess.Popen, Any]:
@@ -116,14 +121,13 @@ def run_room_session(
         .to_jwt()
     )
 
-    m1_cfg = m1_cfg or LLMConfig.from_env("M1")
-    if m1_cfg.api_key:
-        knobs = generate_knobs(task.task_id, trial=trial, base_seed=int(time.time()))
-        m1_room: Any = M1UserSimulator(task=task, knobs=knobs, seed=int(time.time()), config=m1_cfg)
-        print(f"M1 model={m1_cfg.model} endpoint={m1_cfg.endpoint or 'default'} key={m1_cfg.masked_key}")
-    else:
-        m1_room = _scripted_user()
-        print("M1_API_KEY not set — using scripted German caller.")
+    m1_cfg = m1_cfg or resolve_m1_config()[0]
+    if m1_cfg is None:
+        logger.error("no M1 endpoint available (set M1_API_KEY or M2_MODEL_API_KEY)")
+        return None
+    knobs = generate_knobs(task.task_id, trial=trial, base_seed=int(time.time()))
+    m1_room: Any = M1UserSimulator(task=task, knobs=knobs, seed=int(time.time()), config=m1_cfg)
+    print(f"M1 model={m1_cfg.model} endpoint={m1_cfg.endpoint or 'default'} key={m1_cfg.masked_key}")
 
     history: list[Message] = []
     telemetry: list[TurnTelemetry] = []
@@ -272,7 +276,7 @@ def run_room_session(
         telemetry=telemetry,
         stop_reason=state["stop_reason"],
         duration_ms=round((time.time() - start_time) * 1000, 3),
-        m1_model=m1_cfg.model if m1_cfg.api_key else "scripted",
+        m1_model=m1_cfg.model,
         m2_model="livekit-worker",
     )
     report = build_report(task, run)

@@ -29,7 +29,9 @@ load_dotenv(Path(__file__).with_name(".env"))
 load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 from batch_runner import load_tasks, run_tasks  # noqa: E402
+from m1_simulator import derive_seed  # noqa: E402
 from m1_simulator import LLMConfig  # noqa: E402
+from report import existing_cells  # noqa: E402
 from room_session import run_room_session  # noqa: E402
 from schemas import DifficultyTier  # noqa: E402
 
@@ -43,20 +45,37 @@ CSV_CANDIDATES = (
 
 
 def locate_csv(explicit: str | None) -> Path:
+    """Resolve the golden dataset: flag > env > auto-discovery.
+
+    Accepts a file or a directory (uses ``IVA_Test.csv`` inside it, else the
+    first CSV found there).
+    """
+
+    def _resolve(path: Path) -> Path | None:
+        path = path.expanduser()
+        if path.is_dir():
+            named = path / "IVA_Test.csv"
+            if named.exists():
+                return named
+            csvs = sorted(path.glob("*.csv"))
+            return csvs[0] if csvs else None
+        return path if path.exists() else None
+
     if explicit:
-        path = Path(explicit).expanduser()
-        if not path.exists():
-            raise SystemExit(f"CSV not found: {path}")
-        return path
+        resolved = _resolve(Path(explicit))
+        if resolved is None:
+            raise SystemExit(f"CSV not found: {explicit}")
+        return resolved
     env_path = os.environ.get("GOLDEN_DATASET_CSV", "").strip()
     if env_path:
-        path = Path(env_path).expanduser()
-        if path.exists():
-            return path
-        raise SystemExit(f"GOLDEN_DATASET_CSV points to a missing file: {path}")
+        resolved = _resolve(Path(env_path))
+        if resolved is None:
+            raise SystemExit(f"GOLDEN_DATASET_CSV points to a missing dataset: {env_path}")
+        return resolved
     for candidate in CSV_CANDIDATES:
-        if candidate.exists():
-            return candidate
+        resolved = _resolve(candidate)
+        if resolved is not None:
+            return resolved
     searched = ", ".join(str(c) for c in CSV_CANDIDATES)
     raise SystemExit(f"Golden dataset IVA_Test.csv not found (searched: {searched}). Pass --csv.")
 
@@ -64,7 +83,7 @@ def locate_csv(explicit: str | None) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start M1<->M2 conversations from the golden dataset")
     parser.add_argument("--csv", default=None, help="Path to IVA_Test.csv (auto-discovered by default)")
-    parser.add_argument("--limit", type=int, default=3, help="Max usable rows to run (default 3)")
+    parser.add_argument("--limit", type=int, default=0, help="Max usable rows (0 = sweep the whole dataset)")
     parser.add_argument("--task", default=None, help="Only run tasks whose task_id contains this substring")
     parser.add_argument("--trials", type=int, default=1, help="Conversation trials per task")
     parser.add_argument("--mode", default="text", help="Comma list: text, room (default: text)")
@@ -81,9 +100,23 @@ def main() -> int:
     csv_path = locate_csv(args.csv)
     results_dir = Path(args.results_dir)
 
-    tasks = load_tasks(csv_path, limit=args.limit)
+    tasks = load_tasks(csv_path)  # full usable dataset; resume decides what runs
     if args.task:
         tasks = [t for t in tasks if args.task.lower() in t.task_id.lower()]
+    if args.limit and args.limit > 0:
+        pending = existing_cells(results_dir)
+        # apply the limit to rows that still have work to do, not to the file
+        remaining: list = []
+        for task in tasks:
+            has_pending = any(
+                (trial, task.task_id, derive_seed(0, task.task_id, trial)) not in pending
+                for trial in range(1, args.trials + 1)
+            ) if not args.no_resume else True
+            if args.no_resume or has_pending:
+                remaining.append(task)
+            if len(remaining) >= args.limit:
+                break
+        tasks = remaining
     if not tasks:
         logger.error("no usable tasks after filtering (%s)", csv_path)
         return 1
