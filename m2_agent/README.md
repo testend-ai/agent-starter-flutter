@@ -125,17 +125,17 @@ python test_conversation.py --live --row 0
 python batch_runner.py --limit 5 --trials 3 --modes text
 ```
 
-### Console test against the hosted M2 worker
+### Console test against the hosted M2 worker (fully automatic)
 
 ```bash
-# Terminal A — start the agent worker with your exported env
+# ONE command: spawns the M2 worker, joins a fresh room, drives the M1<->M2
+# conversation from live transcriptions, tears down, writes results/
+python test_conversation.py --live-room --room-wait 240 --max-turns 3
+
+# or drive your own `lk agent dev` instead of the auto-spawned one:
 set -a; source .env; set +a
-lk agent dev
-```
-
-```bash
-# Terminal B — probe the room as an M1 participant (experimental)
-python test_conversation.py --live-room --room benchmark-m1-m2 --room-wait 30
+lk agent dev          # Terminal A
+python test_conversation.py --live-room --no-worker   # Terminal B
 ```
 
 The Flutter app remains the visualizer/debugger: run it normally and send the
