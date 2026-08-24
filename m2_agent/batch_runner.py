@@ -13,12 +13,10 @@ worker is not in the loop.
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -225,6 +223,8 @@ def run_tasks(
     results_dir: Path = Path("results"),
     tier: DifficultyTier | None = None,
     resume: bool = True,
+    max_turns: int = 8,
+    timeout_s: float | None = None,
     m1_config: LLMConfig | None = None,
     m1_llm_fn=None,
     m2_llm_fn=None,
@@ -232,12 +232,14 @@ def run_tasks(
     """Run every (task, trial, seed[, mode]) cell; skip already-written cells."""
     done = existing_cells(results_dir) if resume else set()
     written: list[Path] = []
+    skipped = 0
     for trial in range(1, trials + 1):
         for task in tasks:
             seed = derive_seed(base_seed, task.task_id, trial)
             for mode in modes:
                 if (trial, task.task_id, seed) in done:
                     logger.info("resume: skipping completed cell %s trial=%d seed=%d mode=%s", task.task_id, trial, seed, mode)
+                    skipped += 1
                     continue
                 orchestrator, _env_ = build_orchestrator(
                     task=task,
@@ -245,6 +247,8 @@ def run_tasks(
                     tier=tier,
                     trial=trial,
                     base_seed=base_seed,
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
                     m1_config=m1_config,
                     m1_llm_fn=m1_llm_fn,
                     m2_llm_fn=m2_llm_fn,
@@ -254,38 +258,4 @@ def run_tasks(
                 path = write_report(results_dir, report)
                 logger.info("%s -> %s [%d turns, stop=%s]", run.run_id, path, report.turns, report.stop_reason)
                 written.append(path)
-    return {"runs": len(written), "artifacts": [str(p) for p in written]}
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Batch-run M1<->M2 benchmark conversations")
-    parser.add_argument("--csv", default="/Users/jaime/AI-eval-testing/IVA_Test.csv", help="Golden CSV path")
-    parser.add_argument("--limit", type=int, default=1, help="Max usable rows to run (default 1)")
-    parser.add_argument("--trials", type=int, default=3, help="Trials per task")
-    parser.add_argument("--modes", nargs="+", choices=["text", "audio"], default=["text"])
-    parser.add_argument("--tier", choices=["easy", "medium", "hard", "adversarial"], default=None)
-    parser.add_argument("--results-dir", default="results")
-    parser.add_argument("--no-resume", action="store_true", help="Re-run completed checkpoint cells")
-    args = parser.parse_args(argv)
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    tasks = load_tasks(Path(args.csv), limit=args.limit)
-    if not tasks:
-        logger.error("no usable tasks loaded from %s", args.csv)
-        return 1
-    result = run_tasks(
-        tasks=tasks,
-        modes=[RunMode(m) for m in args.modes],  # type: ignore[misc]
-        trials=args.trials,
-        results_dir=Path(args.results_dir),
-        tier=args.tier,  # type: ignore[arg-type]
-        resume=not args.no_resume,
-    )
-    print(f"completed {result['runs']} runs")
-    for artifact in result["artifacts"]:
-        print(f"  {artifact}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return {"runs": len(written), "skipped": skipped, "artifacts": [str(p) for p in written]}

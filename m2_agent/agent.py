@@ -12,22 +12,83 @@ from __future__ import annotations
 import logging
 import os
 
+from pathlib import Path
+
 from dotenv import load_dotenv
-from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
+import httpx
+from livekit.agents import AgentServer, JobContext, JobProcess, WorkerOptions, cli, tts
+from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import cartesia, deepgram, openai, silero
 
-load_dotenv()
+# Load m2_agent/.env first (explicit), then fallback to project root .env
+# This ensures LIVEKIT_URL / API keys resolve regardless of cwd when running
+# `python m2_agent/agent.py` vs `lk agent dev`.
+load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 logger = logging.getLogger("m2-agent")
 
 
 def _env(key: str, default: str = "") -> str:
-    return os.environ.get(key, default).strip().strip('"').strip("'")
+    return os.environ.get(key, default).strip().strip('"').strip("'").strip()
+
+
+def _normalize_base_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    url = url.strip().rstrip("/")
+    # livekit plugins expect base_url without /chat/completions suffix
+    for suffix in ("/chat/completions", "/v1/chat/completions"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+    return url or None
+
+
+class _OpenRouterFluxTTS(tts.TTS):
+    def __init__(self, *, api_key: str, model: str, voice: str, base_url: str) -> None:
+        super().__init__(capabilities=tts.TTSCapabilities(streaming=False), sample_rate=24000, num_channels=1)
+        self._api_key = api_key
+        self._model = model
+        self._voice = voice
+        self._base_url = base_url.rstrip("/")
+
+    def synthesize(self, text: str, *, conn_options=DEFAULT_API_CONNECT_OPTIONS) -> tts.ChunkedStream:
+        return _FluxChunkedStream(tts=self, input_text=text, conn_options=conn_options)
+
+
+class _FluxChunkedStream(tts.ChunkedStream):
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        tts_inst: _OpenRouterFluxTTS = self._tts  # type: ignore
+        url = f"{tts_inst._base_url}/audio/speech"
+        headers = {
+            "Authorization": f"Bearer {tts_inst._api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "m2-agent",
+        }
+        payload = {
+            "model": tts_inst._model,
+            "input": self._input_text,
+            "voice": tts_inst._voice,
+            "response_format": "pcm",
+        }
+        output_emitter.initialize(
+            request_id=tts_inst._base_url,
+            sample_rate=24000,
+            num_channels=1,
+            mime_type="audio/pcm",
+        )
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            pcm: bytes = resp.content
+            output_emitter.push(pcm)
+            output_emitter.flush()
 
 
 def _build_pipeline_session() -> AgentSession:
-    endpoint = _env("M2_MODEL_ENDPOINT") or None
+    endpoint = _normalize_base_url(_env("M2_MODEL_ENDPOINT"))
     api_key = _env("M2_MODEL_API_KEY") or _env("OPENAI_API_KEY")
     model = _env("M2_MODEL_NAME", "gpt-4o-mini")
     try:
@@ -45,7 +106,7 @@ def _build_pipeline_session() -> AgentSession:
     )
 
     stt_provider = _env("M2_STT_PROVIDER", "deepgram").lower()
-    stt_endpoint = _env("M2_STT_ENDPOINT") or None
+    stt_endpoint = _normalize_base_url(_env("M2_STT_ENDPOINT"))
     stt_key = _env("M2_STT_API_KEY") or _env("DEEPGRAM_API_KEY") or api_key
     stt_model = _env("M2_STT_MODEL", "nova-2-general")
 
@@ -59,12 +120,15 @@ def _build_pipeline_session() -> AgentSession:
         stt = deepgram.STT(model=stt_model, api_key=stt_key or None)
 
     tts_provider = _env("M2_TTS_PROVIDER", "cartesia").lower()
-    tts_endpoint = _env("M2_TTS_ENDPOINT") or None
+    tts_endpoint = _normalize_base_url(_env("M2_TTS_ENDPOINT"))
     tts_key = _env("M2_TTS_API_KEY") or _env("CARTESIA_API_KEY") or api_key
     tts_model = _env("M2_TTS_MODEL", "sonic-english")
     voice = _env("M2_VOICE", "79a125e8-cd45-4c13-8a67-188112f4dd22")
 
-    if tts_provider == "openai" or tts_endpoint:
+    is_flux = "flux" in tts_model.lower() and tts_endpoint and "openrouter" in tts_endpoint
+    if is_flux:
+        tts = _OpenRouterFluxTTS(api_key=tts_key or "placeholder", model=tts_model, voice=voice, base_url=tts_endpoint)
+    elif tts_provider == "openai" or tts_endpoint:
         tts = openai.TTS(
             base_url=tts_endpoint,
             api_key=tts_key or "placeholder",
@@ -78,7 +142,7 @@ def _build_pipeline_session() -> AgentSession:
 
 
 def _build_realtime_session(instructions: str) -> AgentSession:
-    endpoint = _env("M2_MODEL_ENDPOINT") or None
+    endpoint = _normalize_base_url(_env("M2_MODEL_ENDPOINT"))
     api_key = _env("M2_MODEL_API_KEY") or _env("OPENAI_API_KEY")
     model = _env("M2_MODEL_NAME", "gpt-4o-realtime-preview")
     voice = _env("M2_VOICE", "alloy")
@@ -104,6 +168,10 @@ def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load()
 
 
+server = AgentServer(setup_fnc=prewarm)
+
+
+@server.rtc_session()
 async def entrypoint(ctx: JobContext) -> None:
     instructions = _env(
         "M2_INSTRUCTIONS",
