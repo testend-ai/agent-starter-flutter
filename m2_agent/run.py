@@ -10,7 +10,8 @@ automatically, saving transcript/telemetry artifacts per run:
     python m2_agent/run.py --mode room,text         # both, same tasks
 
 The golden CSV is auto-discovered: --csv flag > GOLDEN_DATASET_CSV env >
-~/AI-eval-testing/IVA_Test.csv > ./IVA_Test.csv.
+assets/benchmark/IVA_Test.csv (frozen in-repo copy) > ~/AI-eval-testing/IVA_Test.csv
+> ./IVA_Test.csv.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ from schemas import DifficultyTier  # noqa: E402
 logger = logging.getLogger("run")
 
 CSV_CANDIDATES = (
+    # frozen in-repo golden set (hash recorded in assets/benchmark/manifest.json)
+    Path(__file__).resolve().parent.parent / "assets" / "benchmark" / "IVA_Test.csv",
     Path.home() / "AI-eval-testing" / "IVA_Test.csv",
     Path("IVA_Test.csv"),
     Path("../AI-eval-testing/IVA_Test.csv"),
