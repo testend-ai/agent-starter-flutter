@@ -1,0 +1,47 @@
+{
+  "artifacts": {
+    "intents_v1": {
+      "file": "intents_v1.json",
+      "sha256": "f7c7732f7fff5eebee1bcfc0ceb68e0b38c30ea0643ad8831ecd92e052876d60"
+    },
+    "personas_v1": {
+      "file": "personas_v1.json",
+      "sha256": "956e9932122261ffa9e86770aa84d313e76dc82c441b348679be240918f07cda"
+    },
+    "tasks_v1": {
+      "file": "tasks_v1.json",
+      "sha256": "48bd964aaae9091781a1dd877be4e57710ab9b8289ee58133a67414b0a48b45c"
+    }
+  },
+  "counts": {
+    "dropped_excluded": 765,
+    "dropped_missing_fields": 2,
+    "duplicate_openers": 0,
+    "duplicate_task_ids_dropped": 0,
+    "rows_total": 1000,
+    "tasks_emitted": 233,
+    "unique_intents": 150,
+    "unique_personas": 119
+  },
+  "distributions": {
+    "anrede": {
+      "Du": 38,
+      "Sie": 195
+    },
+    "gender": {
+      "männlich": 110,
+      "weiblich": 123
+    }
+  },
+  "generated_at": "2026-08-26T13:57:54+00:00",
+  "generator": "tool/generate_benchmark_assets.py",
+  "schema_version": "1.0",
+  "source": {
+    "dataset": "IVA_Test.csv",
+    "sha256": "894f9d5c6b2fd1faf5e7078007800ac1c48961f5e7fe28326e4da698b5868f25"
+  },
+  "warnings": [
+    "contact 120: missing description",
+    "contact 96: missing description"
+  ]
+}

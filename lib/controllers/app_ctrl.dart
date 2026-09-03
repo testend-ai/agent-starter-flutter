@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:intl/intl.dart';
 import 'package:livekit_client/livekit_client.dart' as sdk;
 import 'package:livekit_components/livekit_components.dart' as components;
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+import '../services/session_recorder.dart';
 
 final String homepageAgentTokenEndpoint = 'https://livekit.com/api/homepage-agent/token';
 
@@ -31,20 +33,42 @@ class AppCtrl extends ChangeNotifier {
 
   late final sdk.Room room = sdk.Room(roomOptions: const sdk.RoomOptions(enableVisualizer: true));
   late final roomContext = components.RoomContext(room: room);
-  late final sdk.Session session = _createSession(room: room);
+  late final SessionRecorder recorder = SessionRecorder(room: room);
+  late final sdk.Session session = _createSession(room: room, recorder: recorder);
 
-  static sdk.Session _createSession({required sdk.Room room}) {
-    // Development-only hardcoded credentials (optional).
-    const hardcodedServerUrl = null; // e.g. 'wss://your-host'
-    const hardcodedToken = null; // e.g. 'eyJ...'
+  static sdk.Session _createSession({
+    required sdk.Room room,
+    SessionRecorder? recorder,
+  }) {
+    final textMessageSender = sdk.TextMessageSender(room: room);
+    final transcriptionReceiver = RecordingTranscriptionReceiver(
+      room: room,
+      recorder: recorder,
+    );
+    final senders = <sdk.MessageSender>[textMessageSender];
+    final receivers = <sdk.MessageReceiver>[textMessageSender, transcriptionReceiver];
 
-    if (hardcodedServerUrl != null && hardcodedToken != null) {
+    final envServerUrl = dotenv.env['LIVEKIT_URL']?.replaceAll('"', '');
+    final envToken = dotenv.env['LIVEKIT_TOKEN']?.replaceAll('"', '');
+    if (envServerUrl != null && envServerUrl.isNotEmpty && envToken != null && envToken.isNotEmpty) {
       return sdk.Session.fromFixedTokenSource(
         sdk.LiteralTokenSource(
-          serverUrl: hardcodedServerUrl,
-          participantToken: hardcodedToken,
+          serverUrl: envServerUrl,
+          participantToken: envToken,
         ),
         options: sdk.SessionOptions(room: room),
+        senders: senders,
+        receivers: receivers,
+      );
+    }
+
+    final tokenEndpoint = dotenv.env['LIVEKIT_TOKEN_ENDPOINT']?.replaceAll('"', '');
+    if (tokenEndpoint != null && tokenEndpoint.isNotEmpty) {
+      return sdk.Session.fromConfigurableTokenSource(
+        sdk.EndpointTokenSource(url: Uri.parse(tokenEndpoint)),
+        options: sdk.SessionOptions(room: room),
+        senders: senders,
+        receivers: receivers,
       );
     }
 
@@ -53,12 +77,14 @@ class AppCtrl extends ChangeNotifier {
     if (sandboxId == null || sandboxId.isEmpty || sandboxId == '<your-sandbox-id>') {
       tokenSource = sdk.EndpointTokenSource(url: Uri.parse(homepageAgentTokenEndpoint));
     } else {
-      tokenSource = sdk.SandboxTokenSource(sandboxId: sandboxId);
+      tokenSource = sdk.DevelopmentTokenSource(id: sandboxId);
     }
 
     return sdk.Session.fromConfigurableTokenSource(
       tokenSource,
       options: sdk.SessionOptions(room: room),
+      senders: senders,
+      receivers: receivers,
     );
   }
 
@@ -73,6 +99,8 @@ class AppCtrl extends ChangeNotifier {
     Logger.root.onRecord.listen((record) {
       debugPrint('${format.format(record.time)}: ${record.message}');
     });
+
+    recorder.attachSession(session);
 
     messageCtrl.addListener(() {
       final newValue = messageCtrl.text.isNotEmpty;
@@ -90,6 +118,7 @@ class AppCtrl extends ChangeNotifier {
     _hasCleanedUp = true;
 
     session.removeListener(_handleSessionChange);
+    await recorder.dispose();
     await session.dispose();
     await room.dispose();
     roomContext.dispose();
@@ -111,7 +140,14 @@ class AppCtrl extends ChangeNotifier {
     notifyListeners();
 
     if (text.isEmpty) return;
-    await session.sendText(text);
+    final sent = await session.sendText(text);
+    if (sent != null) {
+      recorder.onUserTextMessage(
+        id: sent.id,
+        text: text,
+        timestamp: sent.timestamp,
+      );
+    }
   }
 
   void toggleUserCamera(components.MediaDeviceContext? deviceCtx) {
@@ -142,6 +178,7 @@ class AppCtrl extends ChangeNotifier {
     notifyListeners();
 
     try {
+      recorder.startNewSession();
       await session.start();
       if (session.connectionState == sdk.ConnectionState.connected) {
         appScreenState = AppScreenState.agent;
@@ -160,6 +197,7 @@ class AppCtrl extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    await recorder.finalizeAndSave();
     await session.end();
     session.restoreMessageHistory(const []);
     appScreenState = AppScreenState.welcome;
